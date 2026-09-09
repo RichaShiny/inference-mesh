@@ -18,6 +18,27 @@ export type WebRTCSignal =
       candidate: RTCIceCandidateInit;
     };
 
+
+export type RemoteWorkloadPayload =
+  | {
+      operation: "square";
+      value: number;
+    }
+  | {
+      operation: "uppercase";
+      value: string;
+    }
+  | {
+      operation: "word-count";
+      value: string;
+    };
+
+
+export type RemoteWorkloadResult =
+  | number
+  | string;
+
+
 export type PeerMessage =
   | {
       type: "ping";
@@ -30,10 +51,17 @@ export type PeerMessage =
   | {
       type: "workload";
       workloadId: string;
-      payload: unknown;
+      payload: RemoteWorkloadPayload;
     }
   | {
       type: "result";
       workloadId: string;
-      payload: unknown;
+      success: true;
+      result: RemoteWorkloadResult;
+    }
+  | {
+      type: "result";
+      workloadId: string;
+      success: false;
+      error: string;
     };
