@@ -21,6 +21,22 @@ export type WebRTCSignal =
 
 export type RemoteWorkloadPayload =
   | {
+      operation: "classification";
+      text: string;
+    }
+  | {
+      operation: "embedding";
+      text: string;
+    }
+  | {
+      operation: "summarization";
+      text: string;
+    }
+  | {
+      operation: "reasoning";
+      values: number[];
+    }
+  | {
       operation: "square";
       value: number;
     }
@@ -58,10 +74,12 @@ export type PeerMessage =
       workloadId: string;
       success: true;
       result: RemoteWorkloadResult;
+      executionMs: number;
     }
   | {
       type: "result";
       workloadId: string;
       success: false;
       error: string;
+      executionMs: number;
     };

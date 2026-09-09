@@ -66,7 +66,10 @@ function scoreNode(
     );
 
   const gpuBonus =
-    node.webGPU ? 1 : 0;
+    workload.requiresWebGPU &&
+    node.webGPU
+        ? 1
+        : 0;
 
   const computeWeight =
     workloadComputeWeight(workload);

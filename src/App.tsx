@@ -20,6 +20,10 @@ import {
   executeRemoteWorkload,
 } from "./execution/remote";
 
+import type {
+  RemoteWorkloadPayload,
+} from "./network/messages";
+
 import { PeerConnection } from "./network/peer";
 
 import {
@@ -77,6 +81,10 @@ function App() {
 
   const pendingWorkloadIdRef =
     useRef<string | null>(null);
+
+  const peerLatenciesRef = useRef<
+    Map<string, number>
+  >(new Map());
 
 
   const [roomCode, setRoomCode] =
@@ -214,6 +222,8 @@ function App() {
 
     initiatedPeersRef.current.clear();
 
+    peerLatenciesRef.current.clear();
+
     pendingWorkloadIdRef.current =
       null;
   };
@@ -276,6 +286,11 @@ function App() {
                 message.timestamp
               );
 
+            peerLatenciesRef.current.set(
+              remoteNodeId,
+              roundTripMs
+            );
+
             console.log(
               `WebRTC peer ${remoteNodeId} round-trip latency: ${roundTripMs} ms`
             );
@@ -286,11 +301,22 @@ function App() {
           if (
             message.type === "workload"
           ) {
+            const startedAt =
+              performance.now();
+
             try {
               const result =
                 executeRemoteWorkload(
                   message.payload
                 );
+
+              const executionMs =
+                Math.round(
+                  (
+                    performance.now() -
+                    startedAt
+                  ) * 100
+                ) / 100;
 
               peer.send({
                 type: "result",
@@ -298,14 +324,24 @@ function App() {
                   message.workloadId,
                 success: true,
                 result,
+                executionMs,
               });
 
               console.log(
                 "Executed remote workload:",
                 message.workloadId,
-                result
+                result,
+                `${executionMs} ms`
               );
             } catch (error) {
+              const executionMs =
+                Math.round(
+                  (
+                    performance.now() -
+                    startedAt
+                  ) * 100
+                ) / 100;
+
               peer.send({
                 type: "result",
                 workloadId:
@@ -315,6 +351,7 @@ function App() {
                   error instanceof Error
                     ? error.message
                     : "Workload execution failed.",
+                executionMs,
               });
             }
 
@@ -337,7 +374,8 @@ function App() {
               console.error(
                 "Remote workload failed:",
                 message.workloadId,
-                message.error
+                message.error,
+                `${message.executionMs} ms`
               );
 
               setRemoteExecutionResult(
@@ -351,7 +389,8 @@ function App() {
               console.log(
                 "Remote workload result:",
                 message.workloadId,
-                message.result
+                message.result,
+                `${message.executionMs} ms`
               );
 
               setRemoteExecutionResult(
@@ -390,6 +429,10 @@ function App() {
           );
 
           peersRef.current.delete(
+            remoteNodeId
+          );
+
+          peerLatenciesRef.current.delete(
             remoteNodeId
           );
 
@@ -739,13 +782,193 @@ function App() {
     computeScore:
       node.computeScore,
 
-    latencyMs: null,
+    latencyMs:
+      node.nodeId ===
+      nodeIdRef.current
+        ? 0
+        : peerLatenciesRef.current.get(
+            node.nodeId
+          ) ?? null,
 
     activeTasks:
       node.activeTasks,
 
     online: true,
   });
+
+
+  const buildWorkloadPayload = (
+    workload: Workload
+  ): RemoteWorkloadPayload => {
+    if (
+      workload.type ===
+      "classification"
+    ) {
+      return {
+        operation:
+          "classification",
+
+        text:
+          "Customer cannot login to their account and needs a password reset.",
+      };
+    }
+
+    if (
+      workload.type ===
+      "embedding"
+    ) {
+      return {
+        operation:
+          "embedding",
+
+        text:
+          "Enterprise AI inference routing across distributed compute.",
+      };
+    }
+
+    if (
+      workload.type ===
+      "summarization"
+    ) {
+      return {
+        operation:
+          "summarization",
+
+        text:
+          "Inference Mesh connects heterogeneous devices into a shared compute layer and routes workloads according to compute capability, latency, current load, and hardware requirements.",
+      };
+    }
+
+    return {
+      operation:
+        "reasoning",
+
+      values: [
+        12,
+        7,
+        19,
+        4,
+        23,
+        8,
+      ],
+    };
+  };
+
+
+  const executeOnSelectedNode = (
+    result: RoutingResult,
+    workload: Workload
+  ) => {
+    const payload =
+      buildWorkloadPayload(
+        workload
+      );
+
+    if (
+      result.node.id ===
+      nodeIdRef.current
+    ) {
+      try {
+        setRemoteExecutionStatus(
+          "running"
+        );
+
+        const startedAt =
+          performance.now();
+
+        const localResult =
+          executeRemoteWorkload(
+            payload
+          );
+
+        const executionMs =
+          Math.round(
+            (
+              performance.now() -
+              startedAt
+            ) * 100
+          ) / 100;
+
+        console.log(
+          "Executed local workload:",
+          workload.id,
+          localResult,
+          `${executionMs} ms`
+        );
+
+        setRemoteExecutionResult(
+          String(localResult)
+        );
+
+        setRemoteExecutionStatus(
+          "success"
+        );
+      } catch (error) {
+        setRemoteExecutionResult(
+          error instanceof Error
+            ? error.message
+            : "Local workload failed."
+        );
+
+        setRemoteExecutionStatus(
+          "error"
+        );
+      }
+
+      return;
+    }
+
+    const peer =
+      peersRef.current.get(
+        result.node.id
+      );
+
+    if (!peer) {
+      setRemoteExecutionStatus(
+        "error"
+      );
+
+      setRemoteExecutionResult(
+        "Selected peer is not ready."
+      );
+
+      return;
+    }
+
+    pendingWorkloadIdRef.current =
+      workload.id;
+
+    setRemoteExecutionStatus(
+      "running"
+    );
+
+    setRemoteExecutionResult(
+      null
+    );
+
+    const sent =
+      peer.send({
+        type: "workload",
+
+        workloadId:
+          workload.id,
+
+        payload,
+      });
+
+    if (!sent) {
+      pendingWorkloadIdRef.current =
+        null;
+
+      setRemoteExecutionStatus(
+        "error"
+      );
+
+      setRemoteExecutionResult(
+        "Selected node's WebRTC channel is not open."
+      );
+    }
+  };
 
 
   const handleRouteWorkload =
@@ -807,6 +1030,11 @@ function App() {
 
       setRoutingMessage(
         null
+      );
+
+      executeOnSelectedNode(
+        result,
+        workload
       );
     };
 
@@ -1581,6 +1809,41 @@ function App() {
                       .reason
                   }
                 </p>
+
+                {remoteExecutionStatus ===
+                  "running" && (
+                  <p className="routing-placeholder">
+                    Executing{" "}
+                    {workloadType} workload
+                    on selected node...
+                  </p>
+                )}
+
+                {remoteExecutionStatus ===
+                  "success" &&
+                  remoteExecutionResult && (
+                    <div className="route-score">
+                      <span>
+                        Execution result
+                      </span>
+
+                      <strong>
+                        {
+                          remoteExecutionResult
+                        }
+                      </strong>
+                    </div>
+                  )}
+
+                {remoteExecutionStatus ===
+                  "error" &&
+                  remoteExecutionResult && (
+                    <p className="room-error">
+                      {
+                        remoteExecutionResult
+                      }
+                    </p>
+                  )}
               </>
             ) : (
               <p className="routing-placeholder">
