@@ -22,6 +22,8 @@ import {
   type NodePresence,
 } from "./network/signaling";
 
+import { PeerConnection } from "./network/peer";
+
 import { routeWorkload } from "./routing/router";
 
 import type {
@@ -61,6 +63,14 @@ function App() {
       null
     );
 
+  const peersRef = useRef<
+    Map<string, PeerConnection>
+  >(new Map());
+
+  const initiatedPeersRef = useRef<
+    Set<string>
+  >(new Set());
+
   const [roomCode, setRoomCode] =
     useState("");
 
@@ -72,7 +82,10 @@ function App() {
 
   const [roomStatus, setRoomStatus] =
     useState<
-      "idle" | "connecting" | "connected" | "error"
+      "idle" |
+      "connecting" |
+      "connected" |
+      "error"
     >("idle");
 
   const [roomError, setRoomError] =
@@ -164,6 +177,127 @@ function App() {
     });
 
 
+  const closePeerConnections = () => {
+    for (
+      const peer
+      of peersRef.current.values()
+    ) {
+      peer.close();
+    }
+
+    peersRef.current.clear();
+
+    initiatedPeersRef.current.clear();
+  };
+
+
+  const getOrCreatePeer = (
+    remoteNodeId: string
+  ): PeerConnection => {
+    const existing =
+      peersRef.current.get(
+        remoteNodeId
+      );
+
+    if (existing) {
+      return existing;
+    }
+
+    let peer: PeerConnection;
+
+    peer = new PeerConnection(
+      nodeIdRef.current,
+      remoteNodeId,
+      {
+        onSignal: async (signal) => {
+          const connection =
+            connectionRef.current;
+
+          if (!connection) {
+            console.warn(
+              "Cannot send WebRTC signal without an active room connection."
+            );
+
+            return;
+          }
+
+          await connection.sendSignal(
+            signal
+          );
+        },
+
+        onMessage: (message) => {
+          if (
+            message.type === "ping"
+          ) {
+            peer.send({
+              type: "pong",
+              timestamp:
+                message.timestamp,
+            });
+
+            return;
+          }
+
+          if (
+            message.type === "pong"
+          ) {
+            const roundTripMs =
+              Math.round(
+                performance.now() -
+                message.timestamp
+              );
+
+            console.log(
+              `WebRTC peer ${remoteNodeId} round-trip latency: ${roundTripMs} ms`
+            );
+
+            return;
+          }
+
+          console.log(
+            "Peer message received:",
+            message
+          );
+        },
+
+        onOpen: () => {
+          console.log(
+            `WebRTC data channel open: ${remoteNodeId}`
+          );
+
+          peer.send({
+            type: "ping",
+            timestamp:
+              performance.now(),
+          });
+        },
+
+        onClose: () => {
+          console.log(
+            `WebRTC data channel closed: ${remoteNodeId}`
+          );
+
+          peersRef.current.delete(
+            remoteNodeId
+          );
+
+          initiatedPeersRef.current.delete(
+            remoteNodeId
+          );
+        },
+      }
+    );
+
+    peersRef.current.set(
+      remoteNodeId,
+      peer
+    );
+
+    return peer;
+  };
+
+
   useEffect(() => {
     async function loadCapabilities() {
       const detected =
@@ -202,6 +336,8 @@ function App() {
 
   useEffect(() => {
     return () => {
+      closePeerConnections();
+
       const connection =
         connectionRef.current;
 
@@ -210,6 +346,90 @@ function App() {
       }
     };
   }, []);
+
+
+  useEffect(() => {
+    if (
+      !activeRoom ||
+      !connectionRef.current
+    ) {
+      return;
+    }
+
+    const remotePresenceNodes =
+      nodes.filter(
+        (node) =>
+          node.nodeId !==
+          nodeIdRef.current
+      );
+
+    const activeRemoteIds =
+      new Set(
+        remotePresenceNodes.map(
+          (node) => node.nodeId
+        )
+      );
+
+    for (
+      const [
+        remoteNodeId,
+        peer,
+      ]
+      of peersRef.current
+    ) {
+      if (
+        !activeRemoteIds.has(
+          remoteNodeId
+        )
+      ) {
+        peer.close();
+      }
+    }
+
+    for (
+      const remoteNode
+      of remotePresenceNodes
+    ) {
+      const peer =
+        getOrCreatePeer(
+          remoteNode.nodeId
+        );
+
+      const shouldInitiate =
+        nodeIdRef.current.localeCompare(
+          remoteNode.nodeId
+        ) < 0;
+
+      if (
+        !shouldInitiate ||
+        initiatedPeersRef.current.has(
+          remoteNode.nodeId
+        )
+      ) {
+        continue;
+      }
+
+      initiatedPeersRef.current.add(
+        remoteNode.nodeId
+      );
+
+      peer.start().catch(
+        (error) => {
+          console.error(
+            "WebRTC offer failed:",
+            error
+          );
+
+          initiatedPeersRef.current.delete(
+            remoteNode.nodeId
+          );
+        }
+      );
+    }
+  }, [
+    activeRoom,
+    nodes,
+  ]);
 
 
   const connectToRoom = async (
@@ -227,7 +447,9 @@ function App() {
     setRoomError(null);
 
     try {
-      if (connectionRef.current) {
+      if (
+        connectionRef.current
+      ) {
         await connectionRef
           .current
           .leave();
@@ -236,13 +458,29 @@ function App() {
           null;
       }
 
+      closePeerConnections();
+
+      setNodes([]);
+
       const connection =
         await joinComputeRoom(
           normalizedCode,
           buildLocalPresence(),
+
           (presenceNodes) => {
             setNodes(
               presenceNodes
+            );
+          },
+
+          async (signal) => {
+            const peer =
+              getOrCreatePeer(
+                signal.from
+              );
+
+            await peer.handleSignal(
+              signal
             );
           }
         );
@@ -280,44 +518,52 @@ function App() {
   };
 
 
-  const handleCreateRoom = async () => {
-    const code = createRoomCode();
+  const handleCreateRoom =
+    async () => {
+      const code =
+        createRoomCode();
 
-    setRoomCode(code);
-    setActiveRoom(code);
+      setRoomCode(code);
+      setActiveRoom(code);
 
-    await connectToRoom(
-    code,
-    true
-    );
-  };
-
-
-  const handleJoinRoom = async () => {
-    await connectToRoom(
-      joinCode,
-      false
-    );
-  };
+      await connectToRoom(
+        code,
+        true
+      );
+    };
 
 
-  const handleLeaveRoom = async () => {
-    if (connectionRef.current) {
-      await connectionRef
-        .current
-        .leave();
-    }
+  const handleJoinRoom =
+    async () => {
+      await connectToRoom(
+        joinCode,
+        false
+      );
+    };
 
-    connectionRef.current =
-      null;
 
-    setNodes([]);
-    setActiveRoom(null);
-    setRoomCode("");
-    setJoinCode("");
-    setRoomStatus("idle");
-    setRoomError(null);
-  };
+  const handleLeaveRoom =
+    async () => {
+      closePeerConnections();
+
+      if (
+        connectionRef.current
+      ) {
+        await connectionRef
+          .current
+          .leave();
+      }
+
+      connectionRef.current =
+        null;
+
+      setNodes([]);
+      setActiveRoom(null);
+      setRoomCode("");
+      setJoinCode("");
+      setRoomStatus("idle");
+      setRoomError(null);
+    };
 
 
   const handleBenchmark =
@@ -331,6 +577,7 @@ function App() {
         setBenchmark(result);
 
         setRoutingResult(null);
+
         setRoutingMessage(null);
       } finally {
         setBenchmarking(false);
@@ -342,7 +589,9 @@ function App() {
     node: NodePresence
   ): ComputeNode => ({
     id: node.nodeId,
+
     name: node.name,
+
     deviceType:
       node.deviceType,
 
@@ -388,18 +637,19 @@ function App() {
         ];
       }
 
-      const workload: Workload = {
-        id:
-          crypto.randomUUID(),
+      const workload:
+        Workload = {
+          id:
+            crypto.randomUUID(),
 
-        type:
-          workloadType,
+          type:
+            workloadType,
 
-        complexity:
-          workloadComplexity,
+          complexity:
+            workloadComplexity,
 
-        requiresWebGPU,
-      };
+          requiresWebGPU,
+        };
 
       const result =
         routeWorkload(
@@ -408,7 +658,9 @@ function App() {
         );
 
       if (!result) {
-        setRoutingResult(null);
+        setRoutingResult(
+          null
+        );
 
         setRoutingMessage(
           "No connected node satisfies this workload. Make sure at least one node has been benchmarked."
@@ -417,8 +669,13 @@ function App() {
         return;
       }
 
-      setRoutingResult(result);
-      setRoutingMessage(null);
+      setRoutingResult(
+        result
+      );
+
+      setRoutingMessage(
+        null
+      );
     };
 
 
@@ -460,7 +717,9 @@ function App() {
         </div>
 
         <div className="status-pill">
-          <span className="status-dot" />
+          <span
+            className="status-dot"
+          />
 
           {activeRoom
             ? `${nodeCount} node${
@@ -528,7 +787,9 @@ function App() {
             <div className="join-row">
               <input
                 value={joinCode}
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   setJoinCode(
                     event.target.value
                   )
@@ -939,7 +1200,9 @@ function App() {
 
               <select
                 value={workloadType}
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   setWorkloadType(
                     event.target
                       .value as WorkloadType
@@ -974,7 +1237,9 @@ function App() {
                 value={
                   workloadComplexity
                 }
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   setWorkloadComplexity(
                     event.target
                       .value as WorkloadComplexity
@@ -1002,7 +1267,9 @@ function App() {
                 checked={
                   requiresWebGPU
                 }
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   setRequiresWebGPU(
                     event.target
                       .checked

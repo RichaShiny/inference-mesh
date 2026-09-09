@@ -1,7 +1,7 @@
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
 import { supabase } from "../lib/supabase";
-
+import type { WebRTCSignal } from "./messages";
 
 export type NodePresence = {
   nodeId: string;
@@ -21,7 +21,6 @@ export type NodePresence = {
   onlineAt: string;
 };
 
-
 export type ComputeRoomConnection = {
   channel: RealtimeChannel;
 
@@ -29,14 +28,20 @@ export type ComputeRoomConnection = {
     presence: NodePresence
   ) => Promise<void>;
 
+  sendSignal: (
+    signal: WebRTCSignal
+  ) => Promise<void>;
+
   leave: () => Promise<void>;
 };
-
 
 type PresenceCallback = (
   nodes: NodePresence[]
 ) => void;
 
+type SignalCallback = (
+  signal: WebRTCSignal
+) => void | Promise<void>;
 
 function extractNodes(
   state: Record<string, unknown[]>
@@ -61,11 +66,11 @@ function extractNodes(
   return nodes;
 }
 
-
 export async function joinComputeRoom(
   roomCode: string,
   presence: NodePresence,
-  onPresenceChange: PresenceCallback
+  onPresenceChange: PresenceCallback,
+  onSignal: SignalCallback
 ): Promise<ComputeRoomConnection> {
   const topic =
     `compute-room:${roomCode.toUpperCase()}`;
@@ -98,6 +103,26 @@ export async function joinComputeRoom(
       );
 
       onPresenceChange(nodes);
+    }
+  );
+
+  channel.on(
+    "broadcast",
+    {
+      event: "webrtc-signal",
+    },
+    ({ payload }) => {
+      const signal =
+        payload as WebRTCSignal;
+
+      if (
+        signal.to !==
+        presence.nodeId
+      ) {
+        return;
+      }
+
+      void onSignal(signal);
     }
   );
 
@@ -154,6 +179,23 @@ export async function joinComputeRoom(
       if (result !== "ok") {
         throw new Error(
           "Unable to update node presence."
+        );
+      }
+    },
+
+    sendSignal: async (
+      signal
+    ) => {
+      const result =
+        await channel.send({
+          type: "broadcast",
+          event: "webrtc-signal",
+          payload: signal,
+        });
+
+      if (result !== "ok") {
+        throw new Error(
+          "Unable to send WebRTC signal."
         );
       }
     },
