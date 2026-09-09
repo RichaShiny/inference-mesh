@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
 import "./App.css";
 
 import {
@@ -10,6 +15,12 @@ import {
   runCpuBenchmark,
   type BenchmarkResult,
 } from "./device/benchmark";
+
+import {
+  joinComputeRoom,
+  type ComputeRoomConnection,
+  type NodePresence,
+} from "./network/signaling";
 
 import { routeWorkload } from "./routing/router";
 
@@ -41,11 +52,34 @@ const initialCapabilities: DeviceCapabilities = {
 
 
 function App() {
-  const [roomCode, setRoomCode] = useState("");
-  const [joinCode, setJoinCode] = useState("");
+  const nodeIdRef = useRef(
+    crypto.randomUUID()
+  );
+
+  const connectionRef =
+    useRef<ComputeRoomConnection | null>(
+      null
+    );
+
+  const [roomCode, setRoomCode] =
+    useState("");
+
+  const [joinCode, setJoinCode] =
+    useState("");
 
   const [activeRoom, setActiveRoom] =
     useState<string | null>(null);
+
+  const [roomStatus, setRoomStatus] =
+    useState<
+      "idle" | "connecting" | "connected" | "error"
+    >("idle");
+
+  const [roomError, setRoomError] =
+    useState<string | null>(null);
+
+  const [nodes, setNodes] =
+    useState<NodePresence[]>([]);
 
   const [capabilities, setCapabilities] =
     useState<DeviceCapabilities>(
@@ -53,7 +87,9 @@ function App() {
     );
 
   const [benchmark, setBenchmark] =
-    useState<BenchmarkResult | null>(null);
+    useState<BenchmarkResult | null>(
+      null
+    );
 
   const [benchmarking, setBenchmarking] =
     useState(false);
@@ -90,6 +126,44 @@ function App() {
   );
 
 
+  const buildLocalPresence =
+    (): NodePresence => ({
+      nodeId: nodeIdRef.current,
+
+      name:
+        `${capabilities.platform} ` +
+        `${capabilities.deviceType}`,
+
+      deviceType:
+        capabilities.deviceType,
+
+      platform:
+        capabilities.platform,
+
+      browser:
+        capabilities.browser,
+
+      cpuCores:
+        capabilities.cpuCores,
+
+      memoryGB:
+        capabilities.memoryGB,
+
+      webGPU:
+        capabilities.webGPU ===
+        "Supported",
+
+      computeScore:
+        benchmark?.computeScore ??
+        null,
+
+      activeTasks: 0,
+
+      onlineAt:
+        new Date().toISOString(),
+    });
+
+
   useEffect(() => {
     async function loadCapabilities() {
       const detected =
@@ -102,99 +176,267 @@ function App() {
   }, []);
 
 
-  const handleCreateRoom = () => {
+  useEffect(() => {
+    const connection =
+      connectionRef.current;
+
+    if (!connection) {
+      return;
+    }
+
+    connection
+      .updatePresence(
+        buildLocalPresence()
+      )
+      .catch((error) => {
+        console.error(
+          "Presence update failed:",
+          error
+        );
+      });
+  }, [
+    capabilities,
+    benchmark,
+  ]);
+
+
+  useEffect(() => {
+    return () => {
+      const connection =
+        connectionRef.current;
+
+      if (connection) {
+        void connection.leave();
+      }
+    };
+  }, []);
+
+
+  const connectToRoom = async (
+    code: string,
+    createdLocally: boolean
+  ) => {
+    const normalizedCode =
+      code.trim().toUpperCase();
+
+    if (!normalizedCode) {
+      return;
+    }
+
+    setRoomStatus("connecting");
+    setRoomError(null);
+
+    try {
+      if (connectionRef.current) {
+        await connectionRef
+          .current
+          .leave();
+
+        connectionRef.current =
+          null;
+      }
+
+      const connection =
+        await joinComputeRoom(
+          normalizedCode,
+          buildLocalPresence(),
+          (presenceNodes) => {
+            setNodes(
+              presenceNodes
+            );
+          }
+        );
+
+      connectionRef.current =
+        connection;
+
+      setActiveRoom(
+        normalizedCode
+      );
+
+      setRoomCode(
+        createdLocally
+          ? normalizedCode
+          : ""
+      );
+
+      setRoomStatus(
+        "connected"
+      );
+    } catch (error) {
+      console.error(
+        "Room connection failed:",
+        error
+      );
+
+      setRoomStatus("error");
+
+      setRoomError(
+        error instanceof Error
+          ? error.message
+          : "Unable to connect to room."
+      );
+    }
+  };
+
+
+  const handleCreateRoom = async () => {
     const code = createRoomCode();
 
     setRoomCode(code);
     setActiveRoom(code);
+
+    await connectToRoom(
+    code,
+    true
+    );
   };
 
 
-  const handleJoinRoom = () => {
-    const code = joinCode
-      .trim()
-      .toUpperCase();
+  const handleJoinRoom = async () => {
+    await connectToRoom(
+      joinCode,
+      false
+    );
+  };
 
-    if (!code) {
-      return;
+
+  const handleLeaveRoom = async () => {
+    if (connectionRef.current) {
+      await connectionRef
+        .current
+        .leave();
     }
 
-    setActiveRoom(code);
+    connectionRef.current =
+      null;
+
+    setNodes([]);
+    setActiveRoom(null);
+    setRoomCode("");
+    setJoinCode("");
+    setRoomStatus("idle");
+    setRoomError(null);
   };
 
 
-  const handleBenchmark = async () => {
-    setBenchmarking(true);
+  const handleBenchmark =
+    async () => {
+      setBenchmarking(true);
 
-    try {
+      try {
+        const result =
+          await runCpuBenchmark();
+
+        setBenchmark(result);
+
+        setRoutingResult(null);
+        setRoutingMessage(null);
+      } finally {
+        setBenchmarking(false);
+      }
+    };
+
+
+  const presenceToComputeNode = (
+    node: NodePresence
+  ): ComputeNode => ({
+    id: node.nodeId,
+    name: node.name,
+    deviceType:
+      node.deviceType,
+
+    cpuCores:
+      node.cpuCores,
+
+    memoryGB:
+      node.memoryGB,
+
+    webGPU:
+      node.webGPU,
+
+    computeScore:
+      node.computeScore,
+
+    latencyMs: null,
+
+    activeTasks:
+      node.activeTasks,
+
+    online: true,
+  });
+
+
+  const handleRouteWorkload =
+    () => {
+      let routingNodes:
+        ComputeNode[];
+
+      if (
+        activeRoom &&
+        nodes.length > 0
+      ) {
+        routingNodes =
+          nodes.map(
+            presenceToComputeNode
+          );
+      } else {
+        routingNodes = [
+          presenceToComputeNode(
+            buildLocalPresence()
+          ),
+        ];
+      }
+
+      const workload: Workload = {
+        id:
+          crypto.randomUUID(),
+
+        type:
+          workloadType,
+
+        complexity:
+          workloadComplexity,
+
+        requiresWebGPU,
+      };
+
       const result =
-        await runCpuBenchmark();
+        routeWorkload(
+          workload,
+          routingNodes
+        );
 
-      setBenchmark(result);
-      setRoutingResult(null);
+      if (!result) {
+        setRoutingResult(null);
+
+        setRoutingMessage(
+          "No connected node satisfies this workload. Make sure at least one node has been benchmarked."
+        );
+
+        return;
+      }
+
+      setRoutingResult(result);
       setRoutingMessage(null);
-    } finally {
-      setBenchmarking(false);
-    }
-  };
-
-
-  const handleRouteWorkload = () => {
-    if (!benchmark) {
-      setRoutingResult(null);
-
-      setRoutingMessage(
-        "Benchmark this device before routing a workload."
-      );
-
-      return;
-    }
-
-    const localNode: ComputeNode = {
-      id: "local-node",
-      name: `${capabilities.platform} ${capabilities.deviceType}`,
-      deviceType:
-        capabilities.deviceType,
-      cpuCores:
-        capabilities.cpuCores,
-      memoryGB:
-        capabilities.memoryGB,
-      webGPU:
-        capabilities.webGPU ===
-        "Supported",
-      computeScore:
-        benchmark.computeScore,
-      latencyMs: 0,
-      activeTasks: 0,
-      online: true,
     };
 
-    const workload: Workload = {
-      id: "demo-workload",
-      type: workloadType,
-      complexity:
-        workloadComplexity,
-      requiresWebGPU,
-    };
 
-    const result = routeWorkload(
-      workload,
-      [localNode]
+  const remoteNodes =
+    nodes.filter(
+      (node) =>
+        node.nodeId !==
+        nodeIdRef.current
     );
 
-    if (!result) {
-      setRoutingResult(null);
 
-      setRoutingMessage(
-        "No connected node satisfies this workload."
-      );
-
-      return;
-    }
-
-    setRoutingResult(result);
-    setRoutingMessage(null);
-  };
+  const nodeCount =
+    activeRoom
+      ? Math.max(
+          nodes.length,
+          1
+        )
+      : 1;
 
 
   return (
@@ -206,7 +448,9 @@ function App() {
           </div>
 
           <div>
-            <h1>InferenceMesh</h1>
+            <h1>
+              InferenceMesh
+            </h1>
 
             <p>
               Distributed AI across
@@ -217,7 +461,14 @@ function App() {
 
         <div className="status-pill">
           <span className="status-dot" />
-          Local node online
+
+          {activeRoom
+            ? `${nodeCount} node${
+                nodeCount === 1
+                  ? ""
+                  : "s"
+              } online`
+            : "Local node online"}
         </div>
       </header>
 
@@ -250,9 +501,18 @@ function App() {
           <div className="room-panel">
             <button
               className="primary-button"
-              onClick={handleCreateRoom}
+              onClick={
+                handleCreateRoom
+              }
+              disabled={
+                roomStatus ===
+                "connecting"
+              }
             >
-              Create Compute Room
+              {roomStatus ===
+              "connecting"
+                ? "Connecting..."
+                : "Create Compute Room"}
             </button>
 
             <div className="divider">
@@ -279,11 +539,23 @@ function App() {
 
               <button
                 className="secondary-button"
-                onClick={handleJoinRoom}
+                onClick={
+                  handleJoinRoom
+                }
+                disabled={
+                  roomStatus ===
+                    "connecting"
+                }
               >
                 Join
               </button>
             </div>
+
+            {roomError && (
+              <p className="room-error">
+                {roomError}
+              </p>
+            )}
           </div>
         ) : (
           <div className="active-room">
@@ -295,12 +567,30 @@ function App() {
               {activeRoom}
             </strong>
 
-            {roomCode === activeRoom && (
+            <span>
+              {nodeCount} connected
+              {" "}
+              {nodeCount === 1
+                ? "node"
+                : "nodes"}
+            </span>
+
+            {roomCode ===
+              activeRoom && (
               <span>
                 Share this code with
                 another device
               </span>
             )}
+
+            <button
+              className="secondary-button"
+              onClick={
+                handleLeaveRoom
+              }
+            >
+              Leave Room
+            </button>
           </div>
         )}
       </section>
@@ -319,7 +609,10 @@ function App() {
           </div>
 
           <span className="node-count">
-            1 node
+            {nodeCount}{" "}
+            {nodeCount === 1
+              ? "node"
+              : "nodes"}
           </span>
         </div>
 
@@ -333,7 +626,10 @@ function App() {
                 </span>
 
                 <h4>
-                  {capabilities.deviceType}
+                  {
+                    capabilities
+                      .deviceType
+                  }
                 </h4>
               </div>
 
@@ -350,8 +646,11 @@ function App() {
                 </span>
 
                 <strong>
-                  {capabilities.cpuCores ??
-                    "Unknown"}
+                  {
+                    capabilities
+                      .cpuCores ??
+                    "Unknown"
+                  }
                 </strong>
               </div>
 
@@ -361,9 +660,12 @@ function App() {
                 </span>
 
                 <strong>
-                  {capabilities.memoryGB
-                    ? `${capabilities.memoryGB} GB`
-                    : "Unavailable"}
+                  {
+                    capabilities
+                      .memoryGB
+                      ? `${capabilities.memoryGB} GB`
+                      : "Unavailable"
+                  }
                 </strong>
               </div>
 
@@ -373,7 +675,10 @@ function App() {
                 </span>
 
                 <strong>
-                  {capabilities.webGPU}
+                  {
+                    capabilities
+                      .webGPU
+                  }
                 </strong>
               </div>
 
@@ -383,7 +688,10 @@ function App() {
                 </span>
 
                 <strong>
-                  {capabilities.browser}
+                  {
+                    capabilities
+                      .browser
+                  }
                 </strong>
               </div>
 
@@ -393,7 +701,10 @@ function App() {
                 </span>
 
                 <strong>
-                  {capabilities.platform}
+                  {
+                    capabilities
+                      .platform
+                  }
                 </strong>
               </div>
 
@@ -424,7 +735,8 @@ function App() {
 
                       <strong>
                         {
-                          benchmark.computeScore
+                          benchmark
+                            .computeScore
                         }
                         /100
                       </strong>
@@ -438,8 +750,8 @@ function App() {
                       <strong>
                         {(
                           benchmark
-                            .operationsPerSecond
-                          / 1_000_000
+                            .operationsPerSecond /
+                          1_000_000
                         ).toFixed(2)}
                         M ops/s
                       </strong>
@@ -452,7 +764,8 @@ function App() {
 
                       <strong>
                         {
-                          benchmark.durationMs
+                          benchmark
+                            .durationMs
                         }{" "}
                         ms
                       </strong>
@@ -461,15 +774,20 @@ function App() {
                 ) : (
                   <p className="benchmark-empty">
                     Benchmark this device
-                    before routing workloads.
+                    before routing
+                    workloads.
                   </p>
                 )}
               </div>
 
               <button
                 className="benchmark-button"
-                onClick={handleBenchmark}
-                disabled={benchmarking}
+                onClick={
+                  handleBenchmark
+                }
+                disabled={
+                  benchmarking
+                }
               >
                 {benchmarking
                   ? "Benchmarking..."
@@ -481,21 +799,119 @@ function App() {
           </article>
 
 
-          <article className="waiting-card">
-            <div className="waiting-icon">
-              +
-            </div>
+          {remoteNodes.map(
+            (node) => (
+              <article
+                className="device-card"
+                key={node.nodeId}
+              >
+                <div className="device-header">
+                  <div>
+                    <span className="device-label">
+                      REMOTE NODE
+                    </span>
 
-            <h4>
-              Waiting for another device
-            </h4>
+                    <h4>
+                      {node.name}
+                    </h4>
+                  </div>
 
-            <p>
-              Join this compute room from
-              another browser to add a
-              peer to the mesh.
-            </p>
-          </article>
+                  <span className="ready-badge">
+                    Online
+                  </span>
+                </div>
+
+                <div className="metrics">
+                  <div className="metric">
+                    <span>
+                      CPU cores
+                    </span>
+
+                    <strong>
+                      {node.cpuCores ??
+                        "Unknown"}
+                    </strong>
+                  </div>
+
+                  <div className="metric">
+                    <span>
+                      Memory
+                    </span>
+
+                    <strong>
+                      {node.memoryGB
+                        ? `${node.memoryGB} GB`
+                        : "Unavailable"}
+                    </strong>
+                  </div>
+
+                  <div className="metric">
+                    <span>
+                      WebGPU
+                    </span>
+
+                    <strong>
+                      {node.webGPU
+                        ? "Supported"
+                        : "Unavailable"}
+                    </strong>
+                  </div>
+
+                  <div className="metric">
+                    <span>
+                      Compute score
+                    </span>
+
+                    <strong>
+                      {node.computeScore ??
+                        "Not benchmarked"}
+                    </strong>
+                  </div>
+
+                  <div className="metric">
+                    <span>
+                      Browser
+                    </span>
+
+                    <strong>
+                      {node.browser}
+                    </strong>
+                  </div>
+
+                  <div className="metric">
+                    <span>
+                      Platform
+                    </span>
+
+                    <strong>
+                      {node.platform}
+                    </strong>
+                  </div>
+                </div>
+              </article>
+            )
+          )}
+
+
+          {remoteNodes.length ===
+            0 && (
+            <article className="waiting-card">
+              <div className="waiting-icon">
+                +
+              </div>
+
+              <h4>
+                Waiting for another
+                device
+              </h4>
+
+              <p>
+                {activeRoom
+                  ? `Join room ${activeRoom} from another browser to add a peer to the mesh.`
+                  : "Create or join a compute room to discover another node."}
+              </p>
+            </article>
+          )}
         </div>
       </section>
 
@@ -583,10 +999,13 @@ function App() {
             <label className="checkbox-row">
               <input
                 type="checkbox"
-                checked={requiresWebGPU}
+                checked={
+                  requiresWebGPU
+                }
                 onChange={(event) =>
                   setRequiresWebGPU(
-                    event.target.checked
+                    event.target
+                      .checked
                   )
                 }
               />
@@ -633,14 +1052,16 @@ function App() {
 
                   <strong>
                     {
-                      routingResult.score
+                      routingResult
+                        .score
                     }
                   </strong>
                 </div>
 
                 <p className="route-reason">
                   {
-                    routingResult.reason
+                    routingResult
+                      .reason
                   }
                 </p>
               </>
