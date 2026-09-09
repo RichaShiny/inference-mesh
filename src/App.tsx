@@ -17,12 +17,16 @@ import {
 } from "./device/benchmark";
 
 import {
+  executeRemoteWorkload,
+} from "./execution/remote";
+
+import { PeerConnection } from "./network/peer";
+
+import {
   joinComputeRoom,
   type ComputeRoomConnection,
   type NodePresence,
 } from "./network/signaling";
-
-import { PeerConnection } from "./network/peer";
 
 import { routeWorkload } from "./routing/router";
 
@@ -70,6 +74,10 @@ function App() {
   const initiatedPeersRef = useRef<
     Set<string>
   >(new Set());
+
+  const pendingWorkloadIdRef =
+    useRef<string | null>(null);
+
 
   const [roomCode, setRoomCode] =
     useState("");
@@ -138,6 +146,23 @@ function App() {
     null
   );
 
+  const [
+    remoteExecutionStatus,
+    setRemoteExecutionStatus,
+  ] = useState<
+    "idle" |
+    "running" |
+    "success" |
+    "error"
+  >("idle");
+
+  const [
+    remoteExecutionResult,
+    setRemoteExecutionResult,
+  ] = useState<string | null>(
+    null
+  );
+
 
   const buildLocalPresence =
     (): NodePresence => ({
@@ -188,6 +213,9 @@ function App() {
     peersRef.current.clear();
 
     initiatedPeersRef.current.clear();
+
+    pendingWorkloadIdRef.current =
+      null;
   };
 
 
@@ -255,10 +283,93 @@ function App() {
             return;
           }
 
-          console.log(
-            "Peer message received:",
-            message
-          );
+          if (
+            message.type === "workload"
+          ) {
+            try {
+              const result =
+                executeRemoteWorkload(
+                  message.payload
+                );
+
+              peer.send({
+                type: "result",
+                workloadId:
+                  message.workloadId,
+                success: true,
+                result,
+              });
+
+              console.log(
+                "Executed remote workload:",
+                message.workloadId,
+                result
+              );
+            } catch (error) {
+              peer.send({
+                type: "result",
+                workloadId:
+                  message.workloadId,
+                success: false,
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Workload execution failed.",
+              });
+            }
+
+            return;
+          }
+
+          if (
+            message.type === "result"
+          ) {
+            if (
+              message.workloadId !==
+              pendingWorkloadIdRef.current
+            ) {
+              return;
+            }
+
+            if (
+              "error" in message
+            ) {
+              console.error(
+                "Remote workload failed:",
+                message.workloadId,
+                message.error
+              );
+
+              setRemoteExecutionResult(
+                message.error
+              );
+
+              setRemoteExecutionStatus(
+                "error"
+              );
+            } else {
+              console.log(
+                "Remote workload result:",
+                message.workloadId,
+                message.result
+              );
+
+              setRemoteExecutionResult(
+                String(
+                  message.result
+                )
+              );
+
+              setRemoteExecutionStatus(
+                "success"
+              );
+            }
+
+            pendingWorkloadIdRef.current =
+              null;
+
+            return;
+          }
         },
 
         onOpen: () => {
@@ -443,7 +554,10 @@ function App() {
       return;
     }
 
-    setRoomStatus("connecting");
+    setRoomStatus(
+      "connecting"
+    );
+
     setRoomError(null);
 
     try {
@@ -507,7 +621,9 @@ function App() {
         error
       );
 
-      setRoomStatus("error");
+      setRoomStatus(
+        "error"
+      );
 
       setRoomError(
         error instanceof Error
@@ -524,6 +640,7 @@ function App() {
         createRoomCode();
 
       setRoomCode(code);
+
       setActiveRoom(code);
 
       await connectToRoom(
@@ -558,11 +675,26 @@ function App() {
         null;
 
       setNodes([]);
+
       setActiveRoom(null);
+
       setRoomCode("");
+
       setJoinCode("");
-      setRoomStatus("idle");
+
+      setRoomStatus(
+        "idle"
+      );
+
       setRoomError(null);
+
+      setRemoteExecutionStatus(
+        "idle"
+      );
+
+      setRemoteExecutionResult(
+        null
+      );
     };
 
 
@@ -679,6 +811,67 @@ function App() {
     };
 
 
+  const handleRemoteTest = (
+    remoteNodeId: string
+  ) => {
+    const peer =
+      peersRef.current.get(
+        remoteNodeId
+      );
+
+    if (!peer) {
+      setRemoteExecutionStatus(
+        "error"
+      );
+
+      setRemoteExecutionResult(
+        "Peer connection is not ready."
+      );
+
+      return;
+    }
+
+    const workloadId =
+      crypto.randomUUID();
+
+    pendingWorkloadIdRef.current =
+      workloadId;
+
+    setRemoteExecutionStatus(
+      "running"
+    );
+
+    setRemoteExecutionResult(
+      null
+    );
+
+    const sent =
+      peer.send({
+        type: "workload",
+
+        workloadId,
+
+        payload: {
+          operation: "square",
+          value: 12,
+        },
+      });
+
+    if (!sent) {
+      pendingWorkloadIdRef.current =
+        null;
+
+      setRemoteExecutionStatus(
+        "error"
+      );
+
+      setRemoteExecutionResult(
+        "WebRTC data channel is not open."
+      );
+    }
+  };
+
+
   const remoteNodes =
     nodes.filter(
       (node) =>
@@ -786,7 +979,9 @@ function App() {
 
             <div className="join-row">
               <input
-                value={joinCode}
+                value={
+                  joinCode
+                }
                 onChange={(
                   event
                 ) =>
@@ -805,7 +1000,7 @@ function App() {
                 }
                 disabled={
                   roomStatus ===
-                    "connecting"
+                  "connecting"
                 }
               >
                 Join
@@ -829,8 +1024,7 @@ function App() {
             </strong>
 
             <span>
-              {nodeCount} connected
-              {" "}
+              {nodeCount} connected{" "}
               {nodeCount === 1
                 ? "node"
                 : "nodes"}
@@ -1064,7 +1258,9 @@ function App() {
             (node) => (
               <article
                 className="device-card"
-                key={node.nodeId}
+                key={
+                  node.nodeId
+                }
               >
                 <div className="device-header">
                   <div>
@@ -1081,6 +1277,7 @@ function App() {
                     Online
                   </span>
                 </div>
+
 
                 <div className="metrics">
                   <div className="metric">
@@ -1149,6 +1346,57 @@ function App() {
                     </strong>
                   </div>
                 </div>
+
+
+                <div className="benchmark-section">
+                  <div>
+                    <span className="device-label">
+                      REMOTE EXECUTION
+                    </span>
+
+                    <p className="benchmark-empty">
+                      Test workload:
+                      {" "}
+                      square(12)
+                    </p>
+
+                    {remoteExecutionStatus ===
+                      "running" && (
+                      <p>
+                        Running remotely...
+                      </p>
+                    )}
+
+                    {remoteExecutionResult && (
+                      <p>
+                        Result:{" "}
+                        <strong>
+                          {
+                            remoteExecutionResult
+                          }
+                        </strong>
+                      </p>
+                    )}
+                  </div>
+
+                  <button
+                    className="benchmark-button"
+                    onClick={() =>
+                      handleRemoteTest(
+                        node.nodeId
+                      )
+                    }
+                    disabled={
+                      remoteExecutionStatus ===
+                      "running"
+                    }
+                  >
+                    {remoteExecutionStatus ===
+                    "running"
+                      ? "Running..."
+                      : "Run on Remote Node"}
+                  </button>
+                </div>
               </article>
             )
           )}
@@ -1199,7 +1447,9 @@ function App() {
               </label>
 
               <select
-                value={workloadType}
+                value={
+                  workloadType
+                }
                 onChange={(
                   event
                 ) =>
