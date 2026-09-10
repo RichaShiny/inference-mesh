@@ -2,6 +2,8 @@
 
 **InferenceMesh is a private AI operations layer that routes business tasks across approved models and trusted devices while keeping people in control.**
 
+**[Try the live app](https://inference-mesh-nine.vercel.app/)**
+
 The first real workflow is customer-support triage. A support request enters the workspace, a browser model suggests its category and priority, company policy determines the approved execution path, and a person reviews the result before work begins. The decision and its execution evidence are saved in a secure team workspace.
 
 ## Why this project exists
