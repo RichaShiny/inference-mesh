@@ -85,9 +85,13 @@ original prediction, reviewed category, model identity, and measured timings.
 Business value and failure cost currently use explicit prototype defaults (1,
 and 10 for high risk); they are not measured financial estimates.
 
-The included database policy is intended for prototyping. It uses a generated
-workspace ID for queue separation, but it does not provide secure tenant
-isolation. Replace it with authenticated workspace membership before production.
+Authentication supports Google OAuth and passwordless email links through
+Supabase Auth. The secure-workspaces migration replaces anonymous ticket access
+with authenticated workspace membership and creates a personal workspace on
+first use. Configure the app URL and OAuth redirect URLs in Supabase before
+deploying to a public domain. Google sign-in is shown when
+`VITE_ENABLE_GOOGLE_AUTH=true`; enable and configure the Google provider in
+Supabase before setting that flag.
 
 The ticket workflow currently executes on the local browser, separately from the
 existing WebRTC demo. Ticket inference across peers and production authentication

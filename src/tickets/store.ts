@@ -20,16 +20,12 @@ export type StoredTicket = {
 
 export type StorageMode = "cloud" | "browser";
 
-const workspaceKey = "inferencemesh-workspace-id";
 const backupKey = "inferencemesh-support-tickets";
 
-function workspaceId() {
-  let id = localStorage.getItem(workspaceKey);
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem(workspaceKey, id);
-  }
-  return id;
+async function workspaceId() {
+  const { data, error } = await supabase.rpc("ensure_personal_workspace");
+  if (error || !data) throw error ?? new Error("Workspace unavailable.");
+  return String(data);
 }
 
 function readBackup(): StoredTicket[] {
@@ -44,10 +40,10 @@ function writeBackup(tickets: StoredTicket[]) {
   localStorage.setItem(backupKey, JSON.stringify(tickets));
 }
 
-function toRow(ticket: StoredTicket) {
+function toRow(ticket: StoredTicket, currentWorkspaceId: string) {
   return {
     id: ticket.id,
-    workspace_id: workspaceId(),
+    workspace_id: currentWorkspaceId,
     message: ticket.text,
     category: ticket.category,
     predicted_category: ticket.predictedCategory,
@@ -82,7 +78,8 @@ function fromRow(row: Record<string, unknown>): StoredTicket {
 export async function loadTickets(): Promise<{ tickets: StoredTicket[]; mode: StorageMode }> {
   const backup = readBackup();
   try {
-    const { data, error } = await supabase.from("support_tickets").select("*").eq("workspace_id", workspaceId()).order("created_at", { ascending: false });
+    const currentWorkspaceId = await workspaceId();
+    const { data, error } = await supabase.from("support_tickets").select("*").eq("workspace_id", currentWorkspaceId).order("created_at", { ascending: false });
     if (error) throw error;
     const tickets = (data ?? []).map((row) => fromRow(row));
     writeBackup(tickets);
@@ -95,7 +92,8 @@ export async function loadTickets(): Promise<{ tickets: StoredTicket[]; mode: St
 export async function saveTickets(tickets: StoredTicket[]): Promise<StorageMode> {
   writeBackup(tickets);
   try {
-    const { error } = await supabase.from("support_tickets").upsert(tickets.map(toRow));
+    const currentWorkspaceId = await workspaceId();
+    const { error } = await supabase.from("support_tickets").upsert(tickets.map((ticket) => toRow(ticket, currentWorkspaceId)));
     if (error) throw error;
     return "cloud";
   } catch {
