@@ -1,6 +1,9 @@
 .storage-value { font-size: 14px !important; color: #9de9ca; }
+.queue-actions { display: flex; align-items: center; gap: 8px; }
+.delete-button { padding: 8px 11px; border: 1px solid rgba(255,157,168,.5); border-radius: 999px; background: rgba(255,157,168,.08); color: #ffabb5; font: inherit; }
+.delete-button:hover:not(:disabled) { background: rgba(255,157,168,.16); }
 .queue-tools { display: grid; grid-template-columns: 1fr 150px; gap: 10px; margin-top: 22px; }
 .queue-tools input, .queue-tools select, .ticket-controls input { width: 100%; padding: 11px 12px; border: 1px solid #34425b; border-radius: 10px; background: #080e18; color: #f2f5ff; font: inherit; }
 .ticket-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .ticket-controls label { margin-bottom: 0; }
-@media (max-width: 560px) { .queue-tools, .ticket-controls { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .queue-tools, .ticket-controls { grid-template-columns: 1fr; } .queue-actions { flex-wrap: wrap; } }

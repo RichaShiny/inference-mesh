@@ -40,6 +40,10 @@ function writeBackup(tickets: StoredTicket[]) {
   localStorage.setItem(backupKey, JSON.stringify(tickets));
 }
 
+function clearBackup() {
+  localStorage.removeItem(backupKey);
+}
+
 function toRow(ticket: StoredTicket, currentWorkspaceId: string) {
   return {
     id: ticket.id,
@@ -82,7 +86,7 @@ export async function loadTickets(): Promise<{ tickets: StoredTicket[]; mode: St
     const { data, error } = await supabase.from("support_tickets").select("*").eq("workspace_id", currentWorkspaceId).order("created_at", { ascending: false });
     if (error) throw error;
     const tickets = (data ?? []).map((row) => fromRow(row));
-    writeBackup(tickets);
+    clearBackup();
     return { tickets, mode: "cloud" };
   } catch {
     return { tickets: backup, mode: "browser" };
@@ -90,13 +94,27 @@ export async function loadTickets(): Promise<{ tickets: StoredTicket[]; mode: St
 }
 
 export async function saveTickets(tickets: StoredTicket[]): Promise<StorageMode> {
-  writeBackup(tickets);
   try {
     const currentWorkspaceId = await workspaceId();
     const { error } = await supabase.from("support_tickets").upsert(tickets.map((ticket) => toRow(ticket, currentWorkspaceId)));
     if (error) throw error;
+    clearBackup();
     return "cloud";
   } catch {
+    writeBackup(tickets);
+    return "browser";
+  }
+}
+
+export async function clearTickets(): Promise<StorageMode> {
+  try {
+    const currentWorkspaceId = await workspaceId();
+    const { error } = await supabase.from("support_tickets").delete().eq("workspace_id", currentWorkspaceId);
+    if (error) throw error;
+    clearBackup();
+    return "cloud";
+  } catch {
+    clearBackup();
     return "browser";
   }
 }

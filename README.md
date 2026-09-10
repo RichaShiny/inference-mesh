@@ -54,7 +54,7 @@ The product is currently a working prototype. It demonstrates these layers toget
 3. **Inference** — A quantized `Xenova/mobilebert-uncased-mnli` model classifies the text in a Web Worker using Transformers.js. WebGPU is preferred when available, with WebAssembly as the compatibility path.
 4. **Human review** — A person can correct the category and must approve the suggestion.
 5. **Operations** — The ticket receives an owner and moves through open, in-progress, and resolved states.
-6. **Persistence** — Supabase stores the queue inside an authenticated workspace protected by row-level security.
+6. **Persistence** — Supabase stores the queue inside an authenticated workspace protected by row-level security. The browser copy is removed after a successful cloud save, and the user can delete the whole queue from the app.
 
 Model scores rank the available categories; they are not calibrated confidence estimates.
 
@@ -98,7 +98,7 @@ The current browser executor supports the `direct_small` path. Strategies requir
 
 ## Authentication and data
 
-Supabase Auth provides passwordless email login. A personal workspace is created on first use, and row-level policies restrict ticket access to authenticated workspace members.
+Supabase Auth provides passwordless email login and Google sign-in. A personal workspace is created on first use, and row-level policies restrict ticket access to authenticated workspace members. Ticket text is processed by the browser model, then stored in the signed-in workspace for review; it is not sent to the optional enterprise-policy service.
 
 Google sign-in appears when `VITE_ENABLE_GOOGLE_AUTH=true`. Enable the Google provider and configure its OAuth credentials and redirect URLs in Supabase before setting that flag.
 
@@ -107,6 +107,7 @@ Apply both migrations in order:
 ```text
 supabase/migrations/20260910010000_create_support_tickets.sql
 supabase/migrations/20260910023000_secure_workspaces.sql
+supabase/migrations/20260910030000_allow_ticket_deletion.sql
 ```
 
 ## Stack
