@@ -11,15 +11,21 @@ export type WorkloadComplexity =
 
 export type ComputeNode = {
   id: string;
+
   name: string;
+
   deviceType: string;
 
   cpuCores: number | null;
+
   memoryGB: number | null;
+
   webGPU: boolean;
 
   computeScore: number | null;
+
   latencyMs: number | null;
+
   activeTasks: number;
 
   online: boolean;
@@ -27,13 +33,24 @@ export type ComputeNode = {
 
 export type Workload = {
   id: string;
+
   type: WorkloadType;
+
   complexity: WorkloadComplexity;
+
   requiresWebGPU: boolean;
 };
 
 export type RoutingResult = {
   node: ComputeNode;
+
+  baseScore: number;
+
+  historicalAdjustment: number;
+
   score: number;
+
+  historicalReason: string | null;
+
   reason: string;
 };
