@@ -1441,23 +1441,21 @@ function App() {
       <section className="hero">
         <div className="hero-copy">
           <span className="eyebrow">
-            PEER-TO-PEER AI RUNTIME
+            OPTIONAL DEVICE SHARING
           </span>
 
           <h2>
-            Turn nearby devices into
+            Use another trusted device
             <span>
               {" "}
-              one AI compute mesh.
+              when it is the better place to run AI.
             </span>
           </h2>
 
           <p>
-            Connect browsers, profile
-            available compute, route
-            workloads intelligently,
-            and execute AI tasks across
-            heterogeneous edge devices.
+            Create a private room and share its six-character code with
+            another browser. InferenceMesh can then compare the devices and
+            send a task to the better fit.
           </p>
         </div>
 
@@ -1477,14 +1475,14 @@ function App() {
               {roomStatus ===
               "connecting"
                 ? "Connecting..."
-                : "Create Compute Room"}
+                : "Create a private room"}
             </button>
 
             <div className="divider">
               <span />
 
               <p>
-                or join an existing room
+                Have a room code?
               </p>
 
               <span />
@@ -1529,7 +1527,7 @@ function App() {
         ) : (
           <div className="active-room">
             <p>
-              ACTIVE COMPUTE ROOM
+              PRIVATE ROOM
             </p>
 
             <strong>
@@ -1546,7 +1544,7 @@ function App() {
             {roomCode ===
               activeRoom && (
               <span>
-                Share this code with another device
+                Share this code with a trusted device. It only joins this live session.
               </span>
             )}
 
@@ -1556,7 +1554,7 @@ function App() {
                 handleLeaveRoom
               }
             >
-              Leave Room
+                Leave room
             </button>
           </div>
         )}
@@ -1567,7 +1565,7 @@ function App() {
         <div className="section-heading">
           <div>
             <p className="eyebrow">
-              COMPUTE NODES
+              AVAILABLE DEVICES
             </p>
 
             <h3>
@@ -1690,7 +1688,7 @@ function App() {
             <div className="benchmark-section">
               <div>
                 <span className="device-label">
-                  COMPUTE BENCHMARK
+                DEVICE SPEED CHECK
                 </span>
 
                 {benchmark ? (
@@ -1740,7 +1738,7 @@ function App() {
                   </div>
                 ) : (
                   <p className="benchmark-empty">
-                    Benchmark this device before routing workloads.
+                    Run a quick speed check before choosing where a task should run.
                   </p>
                 )}
               </div>
@@ -1758,7 +1756,7 @@ function App() {
                   ? "Benchmarking..."
                   : benchmark
                     ? "Run Again"
-                    : "Benchmark Device"}
+                    : "Check device speed"}
               </button>
             </div>
           </article>
@@ -1918,13 +1916,13 @@ function App() {
               </div>
 
               <h4>
-                Waiting for another device
+                Ready for another device
               </h4>
 
               <p>
                 {activeRoom
-                  ? `Join room ${activeRoom} from another browser to add a peer to the mesh.`
-                  : "Create or join a compute room to discover another node."}
+                  ? `Open InferenceMesh on another trusted browser and enter ${activeRoom}.`
+                  : "Create or join a private room when you want to share work with another device."}
               </p>
             </article>
           )}
@@ -1936,11 +1934,11 @@ function App() {
         <div className="section-heading">
           <div>
             <p className="eyebrow">
-              ADAPTIVE WORKLOAD ROUTER
+              DEVICE RECOMMENDATION
             </p>
 
             <h3>
-              Route an AI workload
+              Choose the best device for a task
             </h3>
           </div>
         </div>
@@ -1950,7 +1948,7 @@ function App() {
           <article className="routing-card">
             <div className="routing-field">
               <label>
-                Workload type
+                Task type
               </label>
 
               <select
@@ -1987,7 +1985,7 @@ function App() {
 
             <div className="routing-field">
               <label>
-                Complexity
+                Task difficulty
               </label>
 
               <select
@@ -2034,7 +2032,7 @@ function App() {
                 }
               />
 
-              Require WebGPU
+              Needs graphics acceleration
             </label>
 
 
@@ -2044,21 +2042,21 @@ function App() {
                 handleRouteWorkload
               }
             >
-              Route Workload
+              Recommend a device
             </button>
           </article>
 
 
           <article className="routing-result-card">
             <span className="device-label">
-              ROUTING DECISION
+              RECOMMENDATION
             </span>
 
             {routingResult ? (
               <>
                 <div className="route-score">
                   <span>
-                    Selected node
+                    Best available device
                   </span>
 
                   <strong>
@@ -2189,7 +2187,7 @@ function App() {
             ) : (
               <p className="routing-placeholder">
                 {routingMessage ??
-                  "Configure a workload and run the router to see which node is selected."}
+                  "Choose what the task needs, then get a recommendation based on device speed, availability, and connection quality."}
               </p>
             )}
           </article>
