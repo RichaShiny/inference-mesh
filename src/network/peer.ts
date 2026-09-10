@@ -74,7 +74,7 @@ export class PeerConnection {
         );
       };
   }
-  
+
   async start(): Promise<void> {
     const channel =
       this.connection.createDataChannel(

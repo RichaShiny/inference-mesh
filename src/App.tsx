@@ -1,3 +1,4 @@
+import TicketDesk from "./tickets/TicketDesk";
 import {
   useEffect,
   useRef,
@@ -20,6 +21,10 @@ import {
   executeRemoteWorkload,
 } from "./execution/remote";
 
+import type {
+  RemoteWorkloadPayload,
+} from "./network/messages";
+
 import { PeerConnection } from "./network/peer";
 
 import {
@@ -38,12 +43,41 @@ import type {
   WorkloadType,
 } from "./routing/types";
 
+import {
+  getExecutionHistory,
+  recordExecution,
+} from "./telemetry/store";
+
+import type {
+  ExecutionTelemetry,
+} from "./telemetry/types";
+
 
 function createRoomCode() {
   return Math.random()
     .toString(36)
     .substring(2, 8)
     .toUpperCase();
+}
+
+
+function roundMs(
+  value: number
+): number {
+  return Math.round(
+    value * 100
+  ) / 100;
+}
+
+
+function formatAdjustment(
+  value: number
+): string {
+  if (value > 0) {
+    return `+${value}`;
+  }
+
+  return String(value);
 }
 
 
@@ -54,6 +88,13 @@ const initialCapabilities: DeviceCapabilities = {
   browser: "Detecting",
   platform: "Detecting",
   deviceType: "Detecting",
+};
+
+
+type PendingRoutedExecution = {
+  workload: Workload;
+  routingResult: RoutingResult;
+  startedAt: number;
 };
 
 
@@ -76,7 +117,18 @@ function App() {
   >(new Set());
 
   const pendingWorkloadIdRef =
-    useRef<string | null>(null);
+    useRef<string | null>(
+      null
+    );
+
+  const pendingRoutedExecutionRef =
+    useRef<
+      PendingRoutedExecution | null
+    >(null);
+
+  const peerLatenciesRef = useRef<
+    Map<string, number>
+  >(new Map());
 
 
   const [roomCode, setRoomCode] =
@@ -86,7 +138,9 @@ function App() {
     useState("");
 
   const [activeRoom, setActiveRoom] =
-    useState<string | null>(null);
+    useState<string | null>(
+      null
+    );
 
   const [roomStatus, setRoomStatus] =
     useState<
@@ -97,10 +151,14 @@ function App() {
     >("idle");
 
   const [roomError, setRoomError] =
-    useState<string | null>(null);
+    useState<string | null>(
+      null
+    );
 
   const [nodes, setNodes] =
-    useState<NodePresence[]>([]);
+    useState<NodePresence[]>(
+      []
+    );
 
   const [capabilities, setCapabilities] =
     useState<DeviceCapabilities>(
@@ -163,10 +221,31 @@ function App() {
     null
   );
 
+  const [
+    executionHistory,
+    setExecutionHistory,
+  ] = useState<ExecutionTelemetry[]>(
+    () => getExecutionHistory()
+  );
+
+
+  const saveTelemetry = (
+    telemetry: ExecutionTelemetry
+  ) => {
+    recordExecution(
+      telemetry
+    );
+
+    setExecutionHistory(
+      getExecutionHistory()
+    );
+  };
+
 
   const buildLocalPresence =
     (): NodePresence => ({
-      nodeId: nodeIdRef.current,
+      nodeId:
+        nodeIdRef.current,
 
       name:
         `${capabilities.platform} ` +
@@ -214,7 +293,12 @@ function App() {
 
     initiatedPeersRef.current.clear();
 
+    peerLatenciesRef.current.clear();
+
     pendingWorkloadIdRef.current =
+      null;
+
+    pendingRoutedExecutionRef.current =
       null;
   };
 
@@ -276,6 +360,11 @@ function App() {
                 message.timestamp
               );
 
+            peerLatenciesRef.current.set(
+              remoteNodeId,
+              roundTripMs
+            );
+
             console.log(
               `WebRTC peer ${remoteNodeId} round-trip latency: ${roundTripMs} ms`
             );
@@ -286,35 +375,61 @@ function App() {
           if (
             message.type === "workload"
           ) {
+            const startedAt =
+              performance.now();
+
             try {
               const result =
                 executeRemoteWorkload(
                   message.payload
                 );
 
+              const executionMs =
+                roundMs(
+                  performance.now() -
+                  startedAt
+                );
+
               peer.send({
                 type: "result",
+
                 workloadId:
                   message.workloadId,
+
                 success: true,
+
                 result,
+
+                executionMs,
               });
 
               console.log(
                 "Executed remote workload:",
                 message.workloadId,
-                result
+                result,
+                `${executionMs} ms`
               );
             } catch (error) {
+              const executionMs =
+                roundMs(
+                  performance.now() -
+                  startedAt
+                );
+
               peer.send({
                 type: "result",
+
                 workloadId:
                   message.workloadId,
+
                 success: false,
+
                 error:
                   error instanceof Error
                     ? error.message
                     : "Workload execution failed.",
+
+                executionMs,
               });
             }
 
@@ -331,13 +446,77 @@ function App() {
               return;
             }
 
+            const pending =
+              pendingRoutedExecutionRef.current;
+
+            const totalLatencyMs =
+              pending
+                ? roundMs(
+                    performance.now() -
+                    pending.startedAt
+                  )
+                : message.executionMs;
+
             if (
-              "error" in message
+              pending &&
+              pending.workload.id ===
+                message.workloadId
+            ) {
+              saveTelemetry({
+                id:
+                  crypto.randomUUID(),
+
+                workloadId:
+                  pending.workload.id,
+
+                workloadType:
+                  pending.workload.type,
+
+                complexity:
+                  pending.workload
+                    .complexity,
+
+                nodeId:
+                  pending.routingResult
+                    .node.id,
+
+                nodeName:
+                  pending.routingResult
+                    .node.name,
+
+                executionLocation:
+                  "remote",
+
+                routingScore:
+                  pending.routingResult
+                    .score,
+
+                networkLatencyMs:
+                  pending.routingResult
+                    .node.latencyMs,
+
+                executionMs:
+                  message.executionMs,
+
+                totalLatencyMs,
+
+                success:
+                  message.success,
+
+                timestamp:
+                  new Date()
+                    .toISOString(),
+              });
+            }
+
+            if (
+              message.success === false
             ) {
               console.error(
                 "Remote workload failed:",
                 message.workloadId,
-                message.error
+                message.error,
+                `${message.executionMs} ms`
               );
 
               setRemoteExecutionResult(
@@ -351,7 +530,8 @@ function App() {
               console.log(
                 "Remote workload result:",
                 message.workloadId,
-                message.result
+                message.result,
+                `${message.executionMs} ms`
               );
 
               setRemoteExecutionResult(
@@ -366,6 +546,9 @@ function App() {
             }
 
             pendingWorkloadIdRef.current =
+              null;
+
+            pendingRoutedExecutionRef.current =
               null;
 
             return;
@@ -393,6 +576,10 @@ function App() {
             remoteNodeId
           );
 
+          peerLatenciesRef.current.delete(
+            remoteNodeId
+          );
+
           initiatedPeersRef.current.delete(
             remoteNodeId
           );
@@ -414,7 +601,9 @@ function App() {
       const detected =
         await detectDeviceCapabilities();
 
-      setCapabilities(detected);
+      setCapabilities(
+        detected
+      );
     }
 
     loadCapabilities();
@@ -477,7 +666,8 @@ function App() {
     const activeRemoteIds =
       new Set(
         remotePresenceNodes.map(
-          (node) => node.nodeId
+          (node) =>
+            node.nodeId
         )
       );
 
@@ -558,7 +748,9 @@ function App() {
       "connecting"
     );
 
-    setRoomError(null);
+    setRoomError(
+      null
+    );
 
     try {
       if (
@@ -579,6 +771,7 @@ function App() {
       const connection =
         await joinComputeRoom(
           normalizedCode,
+
           buildLocalPresence(),
 
           (presenceNodes) => {
@@ -639,9 +832,13 @@ function App() {
       const code =
         createRoomCode();
 
-      setRoomCode(code);
+      setRoomCode(
+        code
+      );
 
-      setActiveRoom(code);
+      setActiveRoom(
+        code
+      );
 
       await connectToRoom(
         code,
@@ -676,7 +873,9 @@ function App() {
 
       setNodes([]);
 
-      setActiveRoom(null);
+      setActiveRoom(
+        null
+      );
 
       setRoomCode("");
 
@@ -686,7 +885,9 @@ function App() {
         "idle"
       );
 
-      setRoomError(null);
+      setRoomError(
+        null
+      );
 
       setRemoteExecutionStatus(
         "idle"
@@ -700,19 +901,29 @@ function App() {
 
   const handleBenchmark =
     async () => {
-      setBenchmarking(true);
+      setBenchmarking(
+        true
+      );
 
       try {
         const result =
           await runCpuBenchmark();
 
-        setBenchmark(result);
+        setBenchmark(
+          result
+        );
 
-        setRoutingResult(null);
+        setRoutingResult(
+          null
+        );
 
-        setRoutingMessage(null);
+        setRoutingMessage(
+          null
+        );
       } finally {
-        setBenchmarking(false);
+        setBenchmarking(
+          false
+        );
       }
     };
 
@@ -720,9 +931,11 @@ function App() {
   const presenceToComputeNode = (
     node: NodePresence
   ): ComputeNode => ({
-    id: node.nodeId,
+    id:
+      node.nodeId,
 
-    name: node.name,
+    name:
+      node.name,
 
     deviceType:
       node.deviceType,
@@ -739,13 +952,301 @@ function App() {
     computeScore:
       node.computeScore,
 
-    latencyMs: null,
+    latencyMs:
+      node.nodeId ===
+      nodeIdRef.current
+        ? 0
+        : peerLatenciesRef
+            .current
+            .get(
+              node.nodeId
+            ) ?? null,
 
     activeTasks:
       node.activeTasks,
 
     online: true,
   });
+
+
+  const buildWorkloadPayload = (
+    workload: Workload
+  ): RemoteWorkloadPayload => {
+    if (
+      workload.type ===
+      "classification"
+    ) {
+      return {
+        operation:
+          "classification",
+
+        text:
+          "Customer cannot login to their account and needs a password reset.",
+      };
+    }
+
+    if (
+      workload.type ===
+      "embedding"
+    ) {
+      return {
+        operation:
+          "embedding",
+
+        text:
+          "Enterprise AI inference routing across distributed compute.",
+      };
+    }
+
+    if (
+      workload.type ===
+      "summarization"
+    ) {
+      return {
+        operation:
+          "summarization",
+
+        text:
+          "Inference Mesh connects heterogeneous devices into a shared compute layer and routes workloads according to compute capability, latency, current load, and hardware requirements.",
+      };
+    }
+
+    return {
+      operation:
+        "reasoning",
+
+      values: [
+        12,
+        7,
+        19,
+        4,
+        23,
+        8,
+      ],
+    };
+  };
+
+
+  const executeOnSelectedNode = (
+    result: RoutingResult,
+    workload: Workload
+  ) => {
+    const payload =
+      buildWorkloadPayload(
+        workload
+      );
+
+    if (
+      result.node.id ===
+      nodeIdRef.current
+    ) {
+      const startedAt =
+        performance.now();
+
+      setRemoteExecutionStatus(
+        "running"
+      );
+
+      setRemoteExecutionResult(
+        null
+      );
+
+      try {
+        const localResult =
+          executeRemoteWorkload(
+            payload
+          );
+
+        const executionMs =
+          roundMs(
+            performance.now() -
+            startedAt
+          );
+
+        saveTelemetry({
+          id:
+            crypto.randomUUID(),
+
+          workloadId:
+            workload.id,
+
+          workloadType:
+            workload.type,
+
+          complexity:
+            workload.complexity,
+
+          nodeId:
+            result.node.id,
+
+          nodeName:
+            result.node.name,
+
+          executionLocation:
+            "local",
+
+          routingScore:
+            result.score,
+
+          networkLatencyMs:
+            0,
+
+          executionMs,
+
+          totalLatencyMs:
+            executionMs,
+
+          success:
+            true,
+
+          timestamp:
+            new Date()
+              .toISOString(),
+        });
+
+        console.log(
+          "Executed local workload:",
+          workload.id,
+          localResult,
+          `${executionMs} ms`
+        );
+
+        setRemoteExecutionResult(
+          String(
+            localResult
+          )
+        );
+
+        setRemoteExecutionStatus(
+          "success"
+        );
+      } catch (error) {
+        const executionMs =
+          roundMs(
+            performance.now() -
+            startedAt
+          );
+
+        saveTelemetry({
+          id:
+            crypto.randomUUID(),
+
+          workloadId:
+            workload.id,
+
+          workloadType:
+            workload.type,
+
+          complexity:
+            workload.complexity,
+
+          nodeId:
+            result.node.id,
+
+          nodeName:
+            result.node.name,
+
+          executionLocation:
+            "local",
+
+          routingScore:
+            result.score,
+
+          networkLatencyMs:
+            0,
+
+          executionMs,
+
+          totalLatencyMs:
+            executionMs,
+
+          success:
+            false,
+
+          timestamp:
+            new Date()
+              .toISOString(),
+        });
+
+        setRemoteExecutionResult(
+          error instanceof Error
+            ? error.message
+            : "Local workload failed."
+        );
+
+        setRemoteExecutionStatus(
+          "error"
+        );
+      }
+
+      return;
+    }
+
+    const peer =
+      peersRef.current.get(
+        result.node.id
+      );
+
+    if (!peer) {
+      setRemoteExecutionStatus(
+        "error"
+      );
+
+      setRemoteExecutionResult(
+        "Selected peer is not ready."
+      );
+
+      return;
+    }
+
+    pendingWorkloadIdRef.current =
+      workload.id;
+
+    pendingRoutedExecutionRef.current = {
+      workload,
+
+      routingResult:
+        result,
+
+      startedAt:
+        performance.now(),
+    };
+
+    setRemoteExecutionStatus(
+      "running"
+    );
+
+    setRemoteExecutionResult(
+      null
+    );
+
+    const sent =
+      peer.send({
+        type:
+          "workload",
+
+        workloadId:
+          workload.id,
+
+        payload,
+      });
+
+    if (!sent) {
+      pendingWorkloadIdRef.current =
+        null;
+
+      pendingRoutedExecutionRef.current =
+        null;
+
+      setRemoteExecutionStatus(
+        "error"
+      );
+
+      setRemoteExecutionResult(
+        "Selected node's WebRTC channel is not open."
+      );
+    }
+  };
 
 
   const handleRouteWorkload =
@@ -786,7 +1287,8 @@ function App() {
       const result =
         routeWorkload(
           workload,
-          routingNodes
+          routingNodes,
+          executionHistory
         );
 
       if (!result) {
@@ -807,6 +1309,11 @@ function App() {
 
       setRoutingMessage(
         null
+      );
+
+      executeOnSelectedNode(
+        result,
+        workload
       );
     };
 
@@ -837,6 +1344,9 @@ function App() {
     pendingWorkloadIdRef.current =
       workloadId;
 
+    pendingRoutedExecutionRef.current =
+      null;
+
     setRemoteExecutionStatus(
       "running"
     );
@@ -847,12 +1357,15 @@ function App() {
 
     const sent =
       peer.send({
-        type: "workload",
+        type:
+          "workload",
 
         workloadId,
 
         payload: {
-          operation: "square",
+          operation:
+            "square",
+
           value: 12,
         },
       });
@@ -903,8 +1416,7 @@ function App() {
             </h1>
 
             <p>
-              Distributed AI across
-              your devices
+              Distributed AI across your devices
             </p>
           </div>
         </div>
@@ -923,6 +1435,7 @@ function App() {
             : "Local node online"}
         </div>
       </header>
+      <TicketDesk />
 
 
       <section className="hero">
@@ -1000,7 +1513,7 @@ function App() {
                 }
                 disabled={
                   roomStatus ===
-                  "connecting"
+                    "connecting"
                 }
               >
                 Join
@@ -1033,8 +1546,7 @@ function App() {
             {roomCode ===
               activeRoom && (
               <span>
-                Share this code with
-                another device
+                Share this code with another device
               </span>
             )}
 
@@ -1228,9 +1740,7 @@ function App() {
                   </div>
                 ) : (
                   <p className="benchmark-empty">
-                    Benchmark this device
-                    before routing
-                    workloads.
+                    Benchmark this device before routing workloads.
                   </p>
                 )}
               </div>
@@ -1355,9 +1865,7 @@ function App() {
                     </span>
 
                     <p className="benchmark-empty">
-                      Test workload:
-                      {" "}
-                      square(12)
+                      Test workload: square(12)
                     </p>
 
                     {remoteExecutionStatus ===
@@ -1388,7 +1896,7 @@ function App() {
                     }
                     disabled={
                       remoteExecutionStatus ===
-                      "running"
+                        "running"
                     }
                   >
                     {remoteExecutionStatus ===
@@ -1410,8 +1918,7 @@ function App() {
               </div>
 
               <h4>
-                Waiting for another
-                device
+                Waiting for another device
               </h4>
 
               <p>
@@ -1429,7 +1936,7 @@ function App() {
         <div className="section-heading">
           <div>
             <p className="eyebrow">
-              WORKLOAD ROUTER
+              ADAPTIVE WORKLOAD ROUTER
             </p>
 
             <h3>
@@ -1564,7 +2071,33 @@ function App() {
 
                 <div className="route-score">
                   <span>
-                    Routing score
+                    Base score
+                  </span>
+
+                  <strong>
+                    {
+                      routingResult
+                        .baseScore
+                    }
+                  </strong>
+                </div>
+
+                <div className="route-score">
+                  <span>
+                    Historical adjustment
+                  </span>
+
+                  <strong>
+                    {formatAdjustment(
+                      routingResult
+                        .historicalAdjustment
+                    )}
+                  </strong>
+                </div>
+
+                <div className="route-score">
+                  <span>
+                    Final routing score
                   </span>
 
                   <strong>
@@ -1575,12 +2108,83 @@ function App() {
                   </strong>
                 </div>
 
+                <div className="route-score">
+                  <span>
+                    Network latency
+                  </span>
+
+                  <strong>
+                    {routingResult
+                      .node
+                      .latencyMs === null
+                      ? "Unknown"
+                      : `${routingResult.node.latencyMs} ms`}
+                  </strong>
+                </div>
+
                 <p className="route-reason">
                   {
                     routingResult
                       .reason
                   }
                 </p>
+
+                {routingResult
+                  .historicalReason ? (
+                  <div className="route-score">
+                    <span>
+                      Historical evidence
+                    </span>
+
+                    <strong>
+                      {
+                        routingResult
+                          .historicalReason
+                      }
+                    </strong>
+                  </div>
+                ) : (
+                  <p className="routing-placeholder">
+                    Cold start: no previous{" "}
+                    {workloadType} executions
+                    for this node yet.
+                  </p>
+                )}
+
+                {remoteExecutionStatus ===
+                  "running" && (
+                  <p className="routing-placeholder">
+                    Executing{" "}
+                    {workloadType} workload
+                    on selected node...
+                  </p>
+                )}
+
+                {remoteExecutionStatus ===
+                  "success" &&
+                  remoteExecutionResult && (
+                    <div className="route-score">
+                      <span>
+                        Execution result
+                      </span>
+
+                      <strong>
+                        {
+                          remoteExecutionResult
+                        }
+                      </strong>
+                    </div>
+                  )}
+
+                {remoteExecutionStatus ===
+                  "error" &&
+                  remoteExecutionResult && (
+                    <p className="room-error">
+                      {
+                        remoteExecutionResult
+                      }
+                    </p>
+                  )}
               </>
             ) : (
               <p className="routing-placeholder">
@@ -1590,6 +2194,154 @@ function App() {
             )}
           </article>
         </div>
+      </section>
+
+
+      <section className="routing-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">
+              EXECUTION TELEMETRY
+            </p>
+
+            <h3>
+              Recent mesh executions
+            </h3>
+          </div>
+
+          <span className="node-count">
+            {executionHistory.length} runs
+          </span>
+        </div>
+
+
+        {executionHistory.length ===
+        0 ? (
+          <article className="waiting-card">
+            <h4>
+              No telemetry yet
+            </h4>
+
+            <p>
+              Route a workload to generate the first execution record.
+            </p>
+          </article>
+        ) : (
+          <div className="device-grid">
+            {executionHistory
+              .slice(
+                0,
+                8
+              )
+              .map(
+                (entry) => (
+                  <article
+                    className="device-card"
+                    key={
+                      entry.id
+                    }
+                  >
+                    <div className="device-header">
+                      <div>
+                        <span className="device-label">
+                          {entry.workloadType.toUpperCase()}
+                        </span>
+
+                        <h4>
+                          {
+                            entry.nodeName
+                          }
+                        </h4>
+                      </div>
+
+                      <span className="ready-badge">
+                        {entry.success
+                          ? "Success"
+                          : "Failed"}
+                      </span>
+                    </div>
+
+                    <div className="metrics">
+                      <div className="metric">
+                        <span>
+                          Location
+                        </span>
+
+                        <strong>
+                          {
+                            entry.executionLocation
+                          }
+                        </strong>
+                      </div>
+
+                      <div className="metric">
+                        <span>
+                          Complexity
+                        </span>
+
+                        <strong>
+                          {
+                            entry.complexity
+                          }
+                        </strong>
+                      </div>
+
+                      <div className="metric">
+                        <span>
+                          Route score
+                        </span>
+
+                        <strong>
+                          {
+                            entry.routingScore
+                          }
+                        </strong>
+                      </div>
+
+                      <div className="metric">
+                        <span>
+                          Network
+                        </span>
+
+                        <strong>
+                          {entry.networkLatencyMs ===
+                          null
+                            ? "Unknown"
+                            : `${entry.networkLatencyMs} ms`}
+                        </strong>
+                      </div>
+
+                      <div className="metric">
+                        <span>
+                          Execution
+                        </span>
+
+                        <strong>
+                          {
+                            entry.executionMs
+                          }{" "}
+                          ms
+                        </strong>
+                      </div>
+
+                      <div className="metric">
+                        <span>
+                          Total
+                        </span>
+
+                        <strong>
+                          {
+                            entry.totalLatencyMs
+                          }{" "}
+                          ms
+                        </strong>
+                      </div>
+                    </div>
+                  </article>
+                )
+              )}
+          </div>
+        )}
       </section>
     </main>
   );

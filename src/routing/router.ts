@@ -4,6 +4,24 @@ import type {
   Workload,
 } from "./types";
 
+import {
+  getNodePerformance,
+} from "../telemetry/stats";
+
+import type {
+  ExecutionTelemetry,
+} from "../telemetry/types";
+
+
+function roundScore(
+  value: number
+): number {
+  return Math.round(
+    value * 1000
+  ) / 1000;
+}
+
+
 function normalizeLatency(
   latencyMs: number | null
 ): number {
@@ -20,96 +38,273 @@ function normalizeLatency(
   );
 }
 
+
 function workloadComputeWeight(
   workload: Workload
 ): number {
-  if (workload.complexity === "high") {
+  if (
+    workload.complexity === "high"
+  ) {
     return 0.55;
   }
 
-  if (workload.complexity === "medium") {
+  if (
+    workload.complexity === "medium"
+  ) {
     return 0.45;
   }
 
   return 0.35;
 }
 
+
+function historicalLatencyScore(
+  latencyMs: number
+): number {
+  return Math.max(
+    0,
+    Math.min(
+      1,
+      1 - latencyMs / 1000
+    )
+  );
+}
+
+
+function getHistoricalAdjustment(
+  node: ComputeNode,
+  workload: Workload,
+  history: ExecutionTelemetry[]
+): {
+  adjustment: number;
+  reason: string | null;
+} {
+  const performance =
+    getNodePerformance(
+      history,
+      node.id,
+      workload.type
+    );
+
+  if (!performance) {
+    return {
+      adjustment: 0,
+      reason: null,
+    };
+  }
+
+  const confidence =
+    Math.min(
+      performance.totalRuns / 5,
+      1
+    );
+
+  const latencyScore =
+    historicalLatencyScore(
+      performance.averageTotalLatencyMs
+    );
+
+  const historicalQuality =
+    performance.successRate *
+      0.65 +
+    latencyScore *
+      0.35;
+
+  const adjustment =
+    (
+      historicalQuality - 0.5
+    ) *
+    0.20 *
+    confidence;
+
+  const roundedAdjustment =
+    roundScore(
+      adjustment
+    );
+
+  const reason =
+    `${performance.totalRuns} prior ` +
+    `${workload.type} run${
+      performance.totalRuns === 1
+        ? ""
+        : "s"
+    }, ` +
+    `${Math.round(
+      performance.successRate * 100
+    )}% success, ` +
+    `${Math.round(
+      performance.averageTotalLatencyMs
+    )} ms average total latency`;
+
+  return {
+    adjustment:
+      roundedAdjustment,
+
+    reason,
+  };
+}
+
+
 function scoreNode(
   node: ComputeNode,
-  workload: Workload
-): number {
+  workload: Workload,
+  history: ExecutionTelemetry[]
+): {
+  baseScore: number;
+  historicalAdjustment: number;
+  finalScore: number;
+  historicalReason: string | null;
+} {
   if (!node.online) {
-    return -1;
+    return {
+      baseScore: -1,
+      historicalAdjustment: 0,
+      finalScore: -1,
+      historicalReason: null,
+    };
   }
 
   if (
     workload.requiresWebGPU &&
     !node.webGPU
   ) {
-    return -1;
+    return {
+      baseScore: -1,
+      historicalAdjustment: 0,
+      finalScore: -1,
+      historicalReason: null,
+    };
   }
 
-  if (node.computeScore === null) {
-    return -1;
+  if (
+    node.computeScore === null
+  ) {
+    return {
+      baseScore: -1,
+      historicalAdjustment: 0,
+      finalScore: -1,
+      historicalReason: null,
+    };
   }
 
   const compute =
     node.computeScore / 100;
 
   const latency =
-    normalizeLatency(node.latencyMs);
+    normalizeLatency(
+      node.latencyMs
+    );
 
   const load =
     Math.max(
       0,
-      1 - node.activeTasks / 5
+      1 -
+        node.activeTasks / 5
     );
 
   const gpuBonus =
-    node.webGPU ? 1 : 0;
+    workload.requiresWebGPU &&
+    node.webGPU
+      ? 1
+      : 0;
 
   const computeWeight =
-    workloadComputeWeight(workload);
+    workloadComputeWeight(
+      workload
+    );
 
-  const score =
-    compute * computeWeight +
-    latency * 0.20 +
-    load * 0.15 +
-    gpuBonus * 0.10;
+  const baseScore =
+    compute *
+      computeWeight +
+    latency *
+      0.20 +
+    load *
+      0.15 +
+    gpuBonus *
+      0.10;
 
-  return Math.round(
-    score * 1000
-  ) / 1000;
+  const historical =
+    getHistoricalAdjustment(
+      node,
+      workload,
+      history
+    );
+
+  const roundedBaseScore =
+    roundScore(
+      baseScore
+    );
+
+  const finalScore =
+    roundScore(
+      baseScore +
+      historical.adjustment
+    );
+
+  return {
+    baseScore:
+      roundedBaseScore,
+
+    historicalAdjustment:
+      historical.adjustment,
+
+    finalScore,
+
+    historicalReason:
+      historical.reason,
+  };
 }
+
 
 export function routeWorkload(
   workload: Workload,
-  nodes: ComputeNode[]
+  nodes: ComputeNode[],
+  history: ExecutionTelemetry[] = []
 ): RoutingResult | null {
-  const scored = nodes
-    .map((node) => ({
-      node,
-      score: scoreNode(
-        node,
-        workload
-      ),
-    }))
-    .filter(
-      (candidate) =>
-        candidate.score >= 0
-    )
-    .sort(
-      (a, b) =>
-        b.score - a.score
-    );
+  const scored =
+    nodes
+      .map((node) => {
+        const result =
+          scoreNode(
+            node,
+            workload,
+            history
+          );
 
-  const winner = scored[0];
+        return {
+          node,
+
+          baseScore:
+            result.baseScore,
+
+          historicalAdjustment:
+            result.historicalAdjustment,
+
+          score:
+            result.finalScore,
+
+          historicalReason:
+            result.historicalReason,
+        };
+      })
+      .filter(
+        (candidate) =>
+          candidate.score >= 0
+      )
+      .sort(
+        (a, b) =>
+          b.score -
+          a.score
+      );
+
+  const winner =
+    scored[0];
 
   if (!winner) {
     return null;
   }
 
-  const reason =
+  let reason =
     `${winner.node.name} had the highest ` +
     `routing score for this ` +
     `${workload.complexity} complexity ` +
@@ -117,9 +312,31 @@ export function routeWorkload(
     `compute performance, latency, ` +
     `current load, and WebGPU support.`;
 
+  if (
+    winner.historicalReason
+  ) {
+    reason +=
+      ` Historical performance also ` +
+      `influenced the decision: ` +
+      `${winner.historicalReason}.`;
+  }
+
   return {
-    node: winner.node,
-    score: winner.score,
+    node:
+      winner.node,
+
+    baseScore:
+      winner.baseScore,
+
+    historicalAdjustment:
+      winner.historicalAdjustment,
+
+    score:
+      winner.score,
+
+    historicalReason:
+      winner.historicalReason,
+
     reason,
   };
 }
