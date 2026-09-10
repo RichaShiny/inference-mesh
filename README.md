@@ -1,103 +1,154 @@
 # InferenceMesh
 
-InferenceMesh is a browser-based peer-to-peer runtime for discovering devices, profiling available compute, routing workloads, and executing tasks across connected nodes.
+**InferenceMesh is a private AI operations layer that routes business tasks across approved models and trusted devices while keeping people in control.**
 
-## Inspiration
+The first real workflow is customer-support triage. A support request enters the workspace, a browser model suggests its category and priority, company policy determines the approved execution path, and a person reviews the result before work begins. The decision and its execution evidence are saved in a secure team workspace.
 
-I started thinking about InferenceMesh while looking at how companies like NVIDIA and AMD approach heterogeneous compute and distributed inference.
+## Why this project exists
 
-At the same time, I was interested in the routing layer behind modern AI systems, where not every task necessarily needs the same model or the same amount of compute.
+Most AI products send every request to the same cloud model. That can be expensive, slow, or inappropriate for sensitive data. At the same time, laptops and other ordinary devices increasingly have CPUs and GPUs capable of useful local inference.
 
-InferenceMesh is my attempt to explore that idea at the browser/device level: can a group of ordinary devices discover each other, understand what compute is available, and decide where a workload should run?
+InferenceMesh explores a different approach:
 
-## What works
+> For each AI task, choose the safest and most appropriate available place to run it.
 
-- Device capability detection
-- CPU benchmarking
-- Compute-room creation and joining
-- Realtime peer presence with Supabase
-- WebRTC signaling
-- Direct browser-to-browser DataChannels
-- Ping/pong latency checks
-- Remote workload execution
-- Basic workload routing using compute score, latency, load, and WebGPU support
+That place might be the current browser, another trusted device, an approved enterprise model, or a verified multi-model workflow. The routing decision can consider privacy, business risk, hardware capability, network latency, current load, and previous execution performance.
 
-## Current architecture
+## What a user can do today
 
+- Sign in with a secure passwordless email link.
+- Work inside an authenticated Supabase workspace.
+- Paste a customer-support request or select a realistic example.
+- Mark sensitive or high-risk requests before processing.
+- Run a real zero-shot classification model inside the browser.
+- Review or correct the suggested category.
+- Assign an owner and move tickets through open, in-progress, and resolved states.
+- Search and filter the operational queue.
+- Save tickets and review decisions in Supabase.
+- Create a private room and connect a second browser through WebRTC.
+- Profile device capabilities, benchmark CPUs, and measure peer latency.
+- Recommend a device using capability, latency, load, and execution history.
+- Execute the current remote-workload demonstration on another browser.
+
+## What makes InferenceMesh different
+
+The individual technologies already exist. [Transformers.js](https://huggingface.co/docs/transformers.js/) and [WebLLM](https://github.com/mlc-ai/web-llm) run models in browsers. [exo](https://github.com/exo-explore/exo) distributes inference across native devices. Cloud AI gateways route requests among hosted models. Support platforms classify and automate customer conversations.
+
+InferenceMesh combines a different set of concerns in one product:
+
+- A business workflow that nontechnical support teams can operate.
+- Local browser inference for requests that should remain on a trusted device.
+- Browser-to-browser discovery and execution without installing a native worker.
+- Enterprise policy separated from model execution.
+- Hardware-aware and history-aware routing.
+- Human approval, corrections, ownership, and audit-friendly execution evidence.
+
+The product is currently a working prototype. It demonstrates these layers together; it does not yet claim production scale or benchmark superiority over established inference engines and support platforms.
+
+## How the support workflow works
+
+1. **Intake** — A user adds a support message and marks its sensitivity and failure risk.
+2. **Policy** — The optional enterprise router receives task metadata, never the ticket text, and recommends an approved execution strategy.
+3. **Inference** — A quantized `Xenova/mobilebert-uncased-mnli` model classifies the text in a Web Worker using Transformers.js. WebGPU is preferred when available, with WebAssembly as the compatibility path.
+4. **Human review** — A person can correct the category and must approve the suggestion.
+5. **Operations** — The ticket receives an owner and moves through open, in-progress, and resolved states.
+6. **Persistence** — Supabase stores the queue inside an authenticated workspace protected by row-level security.
+
+Model scores rank the available categories; they are not calibrated confidence estimates.
+
+## Device mesh architecture
+
+```text
 Browser A
-→ Supabase for discovery/signaling
-→ WebRTC peer connection
-→ Browser B executes workload
-→ result returned over WebRTC
+  ├─ profiles local hardware
+  ├─ creates or joins a private room
+  └─ uses Supabase Realtime for presence and signaling
+                          │
+                          ▼
+                 WebRTC DataChannel
+                          │
+                          ▼
+Browser B
+  ├─ reports capabilities and latency
+  ├─ receives an approved workload
+  └─ returns the result and execution telemetry
+```
 
-Supabase is only used for room presence and WebRTC signaling. Workload data is sent directly between peers.
+Supabase coordinates room discovery and WebRTC signaling. Peer workload messages travel directly through the WebRTC DataChannel.
 
-## Remote execution demo
+## Current limitation
 
-The current proof-of-concept sends:
+The support classifier currently executes in the browser where the ticket was entered. The connected-device demonstration sends `square(12)` to another browser and returns `144`.
 
-square(12)
+The next major technical milestone is to send a real ticket-classification Work Unit to the selected peer, execute the model there, return the classification, and record why that device was chosen. Completing that path will turn the existing local AI workflow and peer runtime into one end-to-end distributed product.
 
-to another connected browser over WebRTC.
+## Enterprise policy integration
 
-The remote node executes the task and returns:
+The optional company-policy control calls the enterprise workload-intelligence project's `POST /route` endpoint through the Vite `/enterprise-api` proxy. Only `task_type`, `sensitivity`, and `risk_level` are sent. Ticket text remains in the browser.
 
-144
+Start the enterprise API locally with:
+
+```bash
+python -m uvicorn src.api.main:app --port 8000
+```
+
+The current browser executor supports the `direct_small` path. Strategies requiring a frontier executor or verified cascade are held for human review until those executors are connected.
+
+## Authentication and data
+
+Supabase Auth provides passwordless email login. A personal workspace is created on first use, and row-level policies restrict ticket access to authenticated workspace members.
+
+Google sign-in appears when `VITE_ENABLE_GOOGLE_AUTH=true`. Enable the Google provider and configure its OAuth credentials and redirect URLs in Supabase before setting that flag.
+
+Apply both migrations in order:
+
+```text
+supabase/migrations/20260910010000_create_support_tickets.sql
+supabase/migrations/20260910023000_secure_workspaces.sql
+```
 
 ## Stack
 
-- React
-- TypeScript
+- React 19 and TypeScript
 - Vite
-- WebRTC
-- WebGPU capability detection
-- Supabase Realtime
+- Transformers.js with WebGPU and WebAssembly
+- Web Workers
+- WebRTC DataChannels
+- Supabase Auth, Postgres, Realtime, and row-level security
 
-## Next
+## Local development
 
-- Configurable remote workloads
-- Real peer latency feeding into routing decisions
-- Local browser-based ML inference
-- Workload scheduling across multiple devices
-- AI model routing based on device capabilities
-## Ticket workspace
+```bash
+npm install
+npm run dev
+```
 
-The top of the app now provides a local ticket-triage workflow using the quantized
-`Xenova/mobilebert-uncased-mnli` zero-shot classifier via Transformers.js in a
-Web Worker. First use downloads model files; tickets are not sent to Hugging Face.
-Enter a ticket, classify it, correct or confirm its category, assign an owner,
-and move it through open, in-progress, and resolved states. The queue persists in
-local browser storage immediately. Apply the migration in
-`supabase/migrations/20260910010000_create_support_tickets.sql` to sync the queue
-through Supabase across refreshes and browsers. Scores are model ranking scores,
-not calibrated confidence. All results require human review.
+Create `.env.local` with:
 
-The optional enterprise policy checkbox calls the existing enterprise project's
-`POST /route` through the Vite `/enterprise-api` proxy to `127.0.0.1:8000`.
-Only `task_type`, `sensitivity`, and `risk_level` are sent. Start that project's
-FastAPI application with `python -m uvicorn src.api.main:app --port 8000` from its
-root in an environment with its `requirements-api.txt` installed. Errors do not
-silently fall back. Policies needing a frontier model or cascade are held for
-review because those executors are not connected yet.
+```text
+VITE_SUPABASE_URL=your-project-url
+VITE_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
+```
 
-Each export includes a Work Unit matching `src/simulation/work_unit.py`, the
-original prediction, reviewed category, model identity, and measured timings.
-Business value and failure cost currently use explicit prototype defaults (1,
-and 10 for high risk); they are not measured financial estimates.
+Optional:
 
-Authentication supports Google OAuth and passwordless email links through
-Supabase Auth. The secure-workspaces migration replaces anonymous ticket access
-with authenticated workspace membership and creates a personal workspace on
-first use. Configure the app URL and OAuth redirect URLs in Supabase before
-deploying to a public domain. Google sign-in is shown when
-`VITE_ENABLE_GOOGLE_AUTH=true`; enable and configure the Google provider in
-Supabase before setting that flag.
+```text
+VITE_ENABLE_GOOGLE_AUTH=true
+```
 
-The ticket workflow currently executes on the local browser, separately from the
-existing WebRTC demo. Ticket inference across peers and production authentication
-are not implemented. The enterprise proxy is a development-server feature; a
-hosted deployment needs an equivalent server route to the enterprise service.
+## Validation
 
-Validation: TypeScript and Vite build; real native-runtime model inference on a
-billing ticket; enterprise API low/high risk responses through the Vite proxy.
-Browser model execution and multi-device ticket execution have not been validated.
+- TypeScript and Vite production build
+- Real browser-model inference on support tickets
+- Enterprise policy responses through the local Vite proxy
+- Two-browser room discovery, WebRTC connection, latency measurement, and remote demo execution
+- Supabase ticket persistence and authenticated workspace policies
+
+## Roadmap
+
+1. Execute real classification Work Units on a selected peer.
+2. Import support requests from CSV and connected channels.
+3. Detect duplicate incidents and approaching SLA deadlines.
+4. Add team invitations and owner roles.
+5. Deploy the enterprise router and web application.
+6. Add routing-quality, latency, correction-rate, and cost dashboards.
