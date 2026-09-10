@@ -65,9 +65,12 @@ The remote node executes the task and returns:
 The top of the app now provides a local ticket-triage workflow using the quantized
 `Xenova/mobilebert-uncased-mnli` zero-shot classifier via Transformers.js in a
 Web Worker. First use downloads model files; tickets are not sent to Hugging Face.
-Enter a ticket, classify it, correct/confirm its category, and export JSON before
-refreshing. The queue is session-only. Scores are model ranking scores, not
-calibrated confidence. All results require human review.
+Enter a ticket, classify it, correct or confirm its category, assign an owner,
+and move it through open, in-progress, and resolved states. The queue persists in
+local browser storage immediately. Apply the migration in
+`supabase/migrations/20260910010000_create_support_tickets.sql` to sync the queue
+through Supabase across refreshes and browsers. Scores are model ranking scores,
+not calibrated confidence. All results require human review.
 
 The optional enterprise policy checkbox calls the existing enterprise project's
 `POST /route` through the Vite `/enterprise-api` proxy to `127.0.0.1:8000`.
@@ -81,6 +84,10 @@ Each export includes a Work Unit matching `src/simulation/work_unit.py`, the
 original prediction, reviewed category, model identity, and measured timings.
 Business value and failure cost currently use explicit prototype defaults (1,
 and 10 for high risk); they are not measured financial estimates.
+
+The included database policy is intended for prototyping. It uses a generated
+workspace ID for queue separation, but it does not provide secure tenant
+isolation. Replace it with authenticated workspace membership before production.
 
 The ticket workflow currently executes on the local browser, separately from the
 existing WebRTC demo. Ticket inference across peers and production authentication
